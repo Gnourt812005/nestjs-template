@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 
 # Scaffolding script
-# Usage: ./init.sh <domain|command|query|vo|enum|domain-event|integration-event> <Name>
+# Usage: ./init.sh <domain|command|query|vo|enum|domain-event|integration-event|module> <Name>
+#   module [Name]        — Minimum scaffold (controller + facade service + schema)
+#   module [Name] --full — Full scaffold (adds internal services, crons, subscribers, events, interfaces, enums)
 
 set -e
 
-if [ -z "$2" ] || { [ "$1" != "domain" ] && [ "$1" != "command" ] && [ "$1" != "query" ] && [ "$1" != "vo" ] && [ "$1" != "enum" ] && [ "$1" != "domain-event" ] && [ "$1" != "integration-event" ]; }; then
-  echo "Usage: $0 <domain|command|query|vo|enum|domain-event|integration-event> <Name>"
+if [ -z "$2" ] || { [ "$1" != "domain" ] && [ "$1" != "command" ] && [ "$1" != "query" ] && [ "$1" != "vo" ] && [ "$1" != "enum" ] && [ "$1" != "domain-event" ] && [ "$1" != "integration-event" ] && [ "$1" != "module" ]; }; then
+  echo "Usage: $0 <domain|command|query|vo|enum|domain-event|integration-event|module> <Name>"
   exit 1
 fi
 
@@ -733,6 +735,434 @@ EOF
   fi
 
   echo "Scaffolding for ${DOMAIN_NAME} (${1}) completed."
+  exit 0
+fi
+
+if [ "$1" = "module" ]; then
+  IS_FULL=false
+  if [ "$3" = "--full" ]; then
+    IS_FULL=true
+  fi
+
+  MODULE_DIR="$ROOT/modules/${KABAB}"
+
+  # Create directory structure
+  mkdir -p "$MODULE_DIR/controllers"
+  mkdir -p "$MODULE_DIR/services"
+  mkdir -p "$MODULE_DIR/schemas"
+  echo "Created module directories: $MODULE_DIR"
+
+  # ------------------------------------------------------------
+  # 1. Schema
+  SCHEMA_FILE="$MODULE_DIR/schemas/${KABAB}.schema.ts"
+  if [ -e "$SCHEMA_FILE" ]; then
+    echo "Schema already exists: $SCHEMA_FILE"
+  else
+    cat > "$SCHEMA_FILE" <<EOF
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { HydratedDocument } from 'mongoose';
+
+@Schema({
+  collection: '${KABAB}s',
+  timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+})
+export class ${CLASS_NAME} {
+  // Define fields here
+  // @Prop({ required: true })
+  // name: string;
+
+  created_at: Date;
+  updated_at: Date;
+}
+
+export type ${CLASS_NAME}Document = HydratedDocument<${CLASS_NAME}>;
+export const ${CLASS_NAME}Schema = SchemaFactory.createForClass(${CLASS_NAME});
+EOF
+    echo "Created schema: $SCHEMA_FILE"
+  fi
+
+  # Schema index
+  if [ ! -f "$MODULE_DIR/schemas/index.ts" ]; then
+    echo "export * from './${KABAB}.schema';" > "$MODULE_DIR/schemas/index.ts"
+    echo "Created schema index"
+  fi
+
+  # ------------------------------------------------------------
+  # 2. Facade Service
+  SERVICE_FILE="$MODULE_DIR/services/${KABAB}.service.ts"
+  if [ -e "$SERVICE_FILE" ]; then
+    echo "Service already exists: $SERVICE_FILE"
+  else
+    if [ "$IS_FULL" = true ]; then
+      cat > "$SERVICE_FILE" <<EOF
+import { Injectable } from '@nestjs/common';
+import { Internal${CLASS_NAME}ReaderService } from './internal/${KABAB}-reader.service';
+import { Internal${CLASS_NAME}WriterService } from './internal/${KABAB}-writer.service';
+
+@Injectable()
+export class ${CLASS_NAME}Service {
+  constructor(
+    private readonly reader: Internal${CLASS_NAME}ReaderService,
+    private readonly writer: Internal${CLASS_NAME}WriterService,
+  ) {}
+
+  async findAll() {
+    return this.reader.findAll();
+  }
+
+  async findById(id: string) {
+    return this.reader.findById(id);
+  }
+
+  async create(data: any) {
+    return this.writer.create(data);
+  }
+
+  async update(id: string, data: any) {
+    return this.writer.update(id, data);
+  }
+
+  async delete(id: string) {
+    return this.writer.delete(id);
+  }
+}
+EOF
+    else
+      cat > "$SERVICE_FILE" <<EOF
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { ${CLASS_NAME}, ${CLASS_NAME}Document } from '../schemas/${KABAB}.schema';
+
+@Injectable()
+export class ${CLASS_NAME}Service {
+  constructor(
+    @InjectModel(${CLASS_NAME}.name) private readonly model: Model<${CLASS_NAME}Document>,
+  ) {}
+
+  async findAll() {
+    return this.model.find().exec();
+  }
+
+  async findById(id: string) {
+    return this.model.findById(id).exec();
+  }
+
+  async create(data: any) {
+    return this.model.create(data);
+  }
+
+  async update(id: string, data: any) {
+    return this.model.findByIdAndUpdate(id, data, { new: true }).exec();
+  }
+
+  async delete(id: string) {
+    return this.model.findByIdAndDelete(id).exec();
+  }
+}
+EOF
+    fi
+    echo "Created service: $SERVICE_FILE"
+  fi
+
+  # Service index
+  if [ ! -f "$MODULE_DIR/services/index.ts" ]; then
+    echo "export * from './${KABAB}.service';" > "$MODULE_DIR/services/index.ts"
+    echo "Created service index"
+  fi
+
+  # ------------------------------------------------------------
+  # 3. Controller
+  CTRL_FILE="$MODULE_DIR/controllers/${KABAB}.controller.ts"
+  if [ -e "$CTRL_FILE" ]; then
+    echo "Controller already exists: $CTRL_FILE"
+  else
+    cat > "$CTRL_FILE" <<EOF
+import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { ${CLASS_NAME}Service } from '../services/${KABAB}.service';
+
+@ApiTags('${KABAB}s')
+@Controller('${KABAB}s')
+export class ${CLASS_NAME}Controller {
+  constructor(private readonly ${KABAB}Service: ${CLASS_NAME}Service) {}
+
+  @Get()
+  async findAll() {
+    return this.${KABAB}Service.findAll();
+  }
+
+  @Post()
+  async create(@Body() body: any) {
+    return this.${KABAB}Service.create(body);
+  }
+
+  @Get(':id')
+  async findById(@Param('id') id: string) {
+    return this.${KABAB}Service.findById(id);
+  }
+}
+EOF
+    echo "Created controller: $CTRL_FILE"
+  fi
+
+  # Controller index
+  if [ ! -f "$MODULE_DIR/controllers/index.ts" ]; then
+    echo "export * from './${KABAB}.controller';" > "$MODULE_DIR/controllers/index.ts"
+    echo "Created controller index"
+  fi
+
+  # ------------------------------------------------------------
+  # 4. Full scaffold extras
+  if [ "$IS_FULL" = true ]; then
+    mkdir -p "$MODULE_DIR/services/internal"
+    mkdir -p "$MODULE_DIR/crons"
+    mkdir -p "$MODULE_DIR/subscribers"
+    mkdir -p "$MODULE_DIR/events"
+    mkdir -p "$MODULE_DIR/interfaces"
+    mkdir -p "$MODULE_DIR/enums"
+
+    # Internal reader service
+    INT_READER="$MODULE_DIR/services/internal/${KABAB}-reader.service.ts"
+    if [ ! -e "$INT_READER" ]; then
+      cat > "$INT_READER" <<EOF
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { ${CLASS_NAME}, ${CLASS_NAME}Document } from '../../schemas/${KABAB}.schema';
+
+@Injectable()
+export class Internal${CLASS_NAME}ReaderService {
+  constructor(
+    @InjectModel(${CLASS_NAME}.name) private readonly model: Model<${CLASS_NAME}Document>,
+  ) {}
+
+  async findAll() {
+    return this.model.find().exec();
+  }
+
+  async findById(id: string) {
+    return this.model.findById(id).exec();
+  }
+}
+EOF
+      echo "Created internal reader: $INT_READER"
+    fi
+
+    # Internal writer service
+    INT_WRITER="$MODULE_DIR/services/internal/${KABAB}-writer.service.ts"
+    if [ ! -e "$INT_WRITER" ]; then
+      cat > "$INT_WRITER" <<EOF
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { ${CLASS_NAME}, ${CLASS_NAME}Document } from '../../schemas/${KABAB}.schema';
+
+@Injectable()
+export class Internal${CLASS_NAME}WriterService {
+  constructor(
+    @InjectModel(${CLASS_NAME}.name) private readonly model: Model<${CLASS_NAME}Document>,
+  ) {}
+
+  async create(data: any) {
+    return this.model.create(data);
+  }
+
+  async update(id: string, data: any) {
+    return this.model.findByIdAndUpdate(id, data, { new: true }).exec();
+  }
+
+  async delete(id: string) {
+    return this.model.findByIdAndDelete(id).exec();
+  }
+}
+EOF
+      echo "Created internal writer: $INT_WRITER"
+    fi
+
+    # Internal index
+    if [ ! -f "$MODULE_DIR/services/internal/index.ts" ]; then
+      cat > "$MODULE_DIR/services/internal/index.ts" <<EOF
+export * from './${KABAB}-reader.service';
+export * from './${KABAB}-writer.service';
+EOF
+      echo "Created internal services index"
+    fi
+
+    # Cron
+    CRON_FILE="$MODULE_DIR/crons/${KABAB}.cron.ts"
+    if [ ! -e "$CRON_FILE" ]; then
+      cat > "$CRON_FILE" <<EOF
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+
+@Injectable()
+export class ${CLASS_NAME}Cron {
+  private readonly logger = new Logger(${CLASS_NAME}Cron.name);
+
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  handleCron() {
+    this.logger.log('Running scheduled task...');
+    // TODO: implement
+  }
+}
+EOF
+      echo "Created cron: $CRON_FILE"
+    fi
+    if [ ! -f "$MODULE_DIR/crons/index.ts" ]; then
+      echo "export * from './${KABAB}.cron';" > "$MODULE_DIR/crons/index.ts"
+    fi
+
+    # Subscriber
+    SUB_FILE="$MODULE_DIR/subscribers/${KABAB}.subscriber.ts"
+    if [ ! -e "$SUB_FILE" ]; then
+      cat > "$SUB_FILE" <<EOF
+import { Injectable } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
+
+@Injectable()
+export class ${CLASS_NAME}Subscriber {
+  @OnEvent('${KABAB}.created')
+  handle${CLASS_NAME}Created(payload: any) {
+    // TODO: handle event
+  }
+}
+EOF
+      echo "Created subscriber: $SUB_FILE"
+    fi
+    if [ ! -f "$MODULE_DIR/subscribers/index.ts" ]; then
+      echo "export * from './${KABAB}.subscriber';" > "$MODULE_DIR/subscribers/index.ts"
+    fi
+
+    # Event class
+    EVENT_FILE="$MODULE_DIR/events/${KABAB}.event.ts"
+    if [ ! -e "$EVENT_FILE" ]; then
+      cat > "$EVENT_FILE" <<EOF
+export class ${CLASS_NAME}Event {
+  constructor(
+    public readonly payload: any,
+  ) {}
+}
+EOF
+      echo "Created event: $EVENT_FILE"
+    fi
+    if [ ! -f "$MODULE_DIR/events/index.ts" ]; then
+      echo "export * from './${KABAB}.event';" > "$MODULE_DIR/events/index.ts"
+    fi
+
+    # Interfaces
+    if [ ! -f "$MODULE_DIR/interfaces/index.ts" ]; then
+      echo "// Export module interfaces here" > "$MODULE_DIR/interfaces/index.ts"
+      echo "Created interfaces index"
+    fi
+
+    # Enums
+    if [ ! -f "$MODULE_DIR/enums/index.ts" ]; then
+      echo "// Export module enums here" > "$MODULE_DIR/enums/index.ts"
+      echo "Created enums index"
+    fi
+  fi
+
+  # ------------------------------------------------------------
+  # 5. Module file
+  MODULE_FILE="$MODULE_DIR/${KABAB}.module.ts"
+  if [ -e "$MODULE_FILE" ]; then
+    echo "Module already exists: $MODULE_FILE"
+  else
+    if [ "$IS_FULL" = true ]; then
+      cat > "$MODULE_FILE" <<EOF
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { ${CLASS_NAME}Controller } from './controllers/${KABAB}.controller';
+import { ${CLASS_NAME}Service } from './services/${KABAB}.service';
+import { Internal${CLASS_NAME}ReaderService } from './services/internal/${KABAB}-reader.service';
+import { Internal${CLASS_NAME}WriterService } from './services/internal/${KABAB}-writer.service';
+import { ${CLASS_NAME}Cron } from './crons/${KABAB}.cron';
+import { ${CLASS_NAME}Subscriber } from './subscribers/${KABAB}.subscriber';
+import { ${CLASS_NAME}, ${CLASS_NAME}Schema } from './schemas/${KABAB}.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: ${CLASS_NAME}.name, schema: ${CLASS_NAME}Schema }]),
+  ],
+  controllers: [${CLASS_NAME}Controller],
+  providers: [
+    ${CLASS_NAME}Service,
+    Internal${CLASS_NAME}ReaderService,
+    Internal${CLASS_NAME}WriterService,
+    ${CLASS_NAME}Cron,
+    ${CLASS_NAME}Subscriber,
+  ],
+  exports: [${CLASS_NAME}Service],
+})
+export class ${CLASS_NAME}Module {}
+EOF
+    else
+      cat > "$MODULE_FILE" <<EOF
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { ${CLASS_NAME}Controller } from './controllers/${KABAB}.controller';
+import { ${CLASS_NAME}Service } from './services/${KABAB}.service';
+import { ${CLASS_NAME}, ${CLASS_NAME}Schema } from './schemas/${KABAB}.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: ${CLASS_NAME}.name, schema: ${CLASS_NAME}Schema }]),
+  ],
+  controllers: [${CLASS_NAME}Controller],
+  providers: [${CLASS_NAME}Service],
+  exports: [${CLASS_NAME}Service],
+})
+export class ${CLASS_NAME}Module {}
+EOF
+    fi
+    echo "Created module: $MODULE_FILE"
+  fi
+
+  # ------------------------------------------------------------
+  # 6. Register in app.module.ts
+  APP_MODULE="$ROOT/nest-config/app.module.ts"
+  if [ -f "$APP_MODULE" ]; then
+    IMPORT_LINE="import { ${CLASS_NAME}Module } from '../modules/${KABAB}/${KABAB}.module';"
+    if ! grep -q "${CLASS_NAME}Module" "$APP_MODULE"; then
+      # Add import at the bottom of the import block (before first @Module line)
+      sed -i "/^import { ExampleModule/a\import { ${CLASS_NAME}Module } from '../modules/${KABAB}/${KABAB}.module';" "$APP_MODULE"
+      # Add to imports array after ExampleModule
+      sed -i "/ExampleModule,/a\    ${CLASS_NAME}Module," "$APP_MODULE"
+      echo "Registered ${CLASS_NAME}Module in app.module.ts"
+    else
+      echo "Module already registered in app.module.ts"
+    fi
+  fi
+
+  # ------------------------------------------------------------
+  # 7. Module barrel index
+  MODULE_INDEX="$MODULE_DIR/index.ts"
+  if [ ! -f "$MODULE_INDEX" ]; then
+    if [ "$IS_FULL" = true ]; then
+      cat > "$MODULE_INDEX" <<EOF
+export * from './${KABAB}.module';
+export * from './controllers';
+export * from './services';
+export * from './schemas';
+export * from './crons';
+export * from './subscribers';
+export * from './events';
+export * from './interfaces';
+export * from './enums';
+EOF
+    else
+      cat > "$MODULE_INDEX" <<EOF
+export * from './${KABAB}.module';
+export * from './controllers';
+export * from './services';
+export * from './schemas';
+EOF
+    fi
+    echo "Created module barrel index: $MODULE_INDEX"
+  fi
+
+  echo "Module scaffolding for ${DOMAIN_NAME} completed."
   exit 0
 fi
 
